@@ -3,27 +3,26 @@ package com.giovang
 import com.lagradost.cloudstream3.*
 import com.lagradost.cloudstream3.utils.AppUtils.parseJson
 import com.lagradost.cloudstream3.utils.ExtractorLink
-import com.lagradost.cloudstream3.utils.INFER_TYPE
+import com.lagradost.cloudstream3.utils.ExtractorLinkType
 import com.lagradost.cloudstream3.utils.Qualities
 
 /**
- * GioVangProvider — đọc giovang_iptv.json và hiển thị trận đấu Live
- * Schema JSON: { groups: [ { name, channels: [ { id, name, image, sources } ] } ] }
+ * GioVangProvider — đọc giovang_iptv.json, hiển thị Live TV trong Cloudstream3
  */
 class GioVangProvider : MainAPI() {
     override var lang = "vi"
 
-    // !! Thay bằng URL thực tế nơi crawler_giovang.py publish giovang_iptv.json
-    // Ví dụ: https://raw.githubusercontent.com/<user>/<repo>/main/giovang_iptv.json
+    // !! Thay bằng URL raw.githubusercontent.com trỏ tới giovang_iptv.json
+    // Ví dụ: "https://raw.githubusercontent.com/user/mon_giovang/main/giovang_iptv.json"
     override var mainUrl =
         "https://gist.githubusercontent.com/Aquadius13/491cfb7d2a2573f744d101a78e198275/raw/giovang_iptv.json"
 
-    override var name = "GioVang TV"
-    override val hasMainPage = true
+    override var name             = "GioVang TV"
+    override val hasMainPage      = true
     override val hasChromecastSupport = true
-    override val supportedTypes = setOf(TvType.Live)
+    override val supportedTypes   = setOf(TvType.Live)
 
-    // ── Data classes ánh xạ JSON ──────────────────────────────
+    // ── Data classes ánh xạ JSON ──────────────────────────────────────────
     data class GVRoot(
         val id: String? = null,
         val name: String? = null,
@@ -61,32 +60,28 @@ class GioVangProvider : MainAPI() {
         val request_headers: List<GVHeader> = emptyList(),
     )
     data class GVHeader(val key: String = "", val value: String = "")
-
-    // LoadData: truyền giữa search → load → loadLinks
     data class LoadData(
-        val channelId: String,
-        val title: String,
-        val poster: String?,
-        val description: String?,
+        val channelId: String = "",
+        val title: String = "",
+        val poster: String? = null,
+        val description: String? = null,
     )
 
-    // ── Cache trong phiên ─────────────────────────────────────
+    // ── Cache ─────────────────────────────────────────────────────────────
     private var cachedById: Map<String, GVChannel> = emptyMap()
 
     private suspend fun fetchRoot(): GVRoot {
-        if (cachedById.isNotEmpty()) return GVRoot() // đã cache
         val text = app.get(mainUrl, timeout = 20).text
         val root = parseJson<GVRoot>(text)
         cachedById = root.groups.flatMap { it.channels }.associateBy { it.id }
         return root
     }
 
-    private suspend fun getChannelById(id: String): GVChannel? {
+    private suspend fun ensureCache() {
         if (cachedById.isEmpty()) fetchRoot()
-        return cachedById[id]
     }
 
-    // ── Trang chính: mỗi group → 1 hàng HomePageList ─────────
+    // ── Trang chính ───────────────────────────────────────────────────────
     override suspend fun getMainPage(
         page: Int,
         request: MainPageRequest,
@@ -94,59 +89,55 @@ class GioVangProvider : MainAPI() {
         val root = fetchRoot()
         val lists = root.groups.map { group ->
             HomePageList(
-                name  = group.name ?: "Trận đấu",
-                list  = group.channels.map { it.toSearch() },
+                name               = group.name ?: "Trận đấu",
+                list               = group.channels.map { it.toSearch() },
                 isHorizontalImages = false,
             )
         }
         return newHomePageResponse(lists, hasNext = false)
     }
 
-    // ── Tìm kiếm ─────────────────────────────────────────────
+    // ── Tìm kiếm ─────────────────────────────────────────────────────────
     override suspend fun search(query: String): List<SearchResponse> {
-        val root = fetchRoot()
+        ensureCache()
         val q = query.trim().lowercase()
-        return root.groups
-            .flatMap { it.channels }
+        return cachedById.values
             .filter { it.name.lowercase().contains(q) }
             .map { it.toSearch() }
     }
 
-    private fun GVChannel.toSearch(): LiveSearchResponse {
-        val data = encodeLoadData(
-            LoadData(id, name, image?.url, description)
-        )
-        return LiveSearchResponse(
+    private fun GVChannel.toSearch(): LiveSearchResponse =
+        newLiveSearchResponse(
             name      = name,
-            url       = data,
-            apiName   = this@GioVangProvider.name,
+            url       = encodeData(LoadData(id, name, image?.url, description)),
             type      = TvType.Live,
-            posterUrl = image?.url,
-        )
-    }
+        ) {
+            posterUrl = image?.url
+        }
 
-    // ── Chi tiết trận đấu ─────────────────────────────────────
+    // ── Chi tiết trận đấu ─────────────────────────────────────────────────
     override suspend fun load(url: String): LoadResponse {
-        val d = decodeLoadData(url)
+        val d = decodeData(url)
         return newLiveStreamLoadResponse(
             name    = d.title,
             url     = url,
             dataUrl = url,
         ) {
             posterUrl = d.poster
-            plot      = d.description
+            plot      = d.description ?: ""
         }
     }
 
-    // ── Lấy link stream thực tế ───────────────────────────────
+    // ── Lấy link stream ───────────────────────────────────────────────────
     override suspend fun loadLinks(
         data: String,
         isCasting: Boolean,
         subtitleCallback: (SubtitleFile) -> Unit,
         callback: (ExtractorLink) -> Unit,
     ): Boolean {
-        val d = decodeLoadData(data)
-        val ch = getChannelById(d.channelId) ?: return false
+        ensureCache()
+        val d  = decodeData(data)
+        val ch = cachedById[d.channelId] ?: return false
         var found = false
 
         for (src in ch.sources) {
@@ -155,19 +146,25 @@ class GioVangProvider : MainAPI() {
                     val blv = stream.name ?: "Trực tiếp"
                     for (link in stream.stream_links) {
                         if (link.url.isBlank()) continue
-                        val headers = link.request_headers
-                            .associate { it.key to it.value }
+                        val headers = link.request_headers.associate { it.key to it.value }
                         val referer = headers["Referer"] ?: mainUrl
+
+                        // Xác định loại link: hls (m3u8) hoặc mp4
+                        val linkType = when (link.type?.lowercase()) {
+                            "hls", "m3u8" -> ExtractorLinkType.M3U8
+                            "mp4"         -> ExtractorLinkType.VIDEO
+                            else          -> ExtractorLinkType.M3U8  // mặc định HLS
+                        }
 
                         callback(
                             ExtractorLink(
-                                source   = name,
-                                name     = "$blv – ${link.name ?: "HD"}",
-                                url      = link.url,
-                                referer  = referer,
-                                quality  = Qualities.Unknown.value,
-                                type     = INFER_TYPE,
-                                headers  = headers,
+                                source  = name,
+                                name    = "$blv – ${link.name ?: "HD"}",
+                                url     = link.url,
+                                referer = referer,
+                                quality = Qualities.Unknown.value,
+                                type    = linkType,
+                                headers = headers,
                             )
                         )
                         found = true
@@ -178,18 +175,16 @@ class GioVangProvider : MainAPI() {
         return found
     }
 
-    // ── Encode/decode LoadData ────────────────────────────────
-    private fun encodeLoadData(d: LoadData): String {
-        fun esc(s: String?) = (s ?: "")
-            .replace("\\", "\\\\")
-            .replace("\"", "\\\"")
-            .replace("\n", " ")
-        return """{"channelId":"${esc(d.channelId)}","title":"${esc(d.title)}","poster":"${esc(d.poster)}","description":"${esc(d.description)}"}"""
+    // ── Encode / decode LoadData ──────────────────────────────────────────
+    private fun encodeData(d: LoadData): String {
+        fun e(s: String?) = (s ?: "")
+            .replace("\\", "\\\\").replace("\"", "\\\"").replace("\n", " ")
+        return """{"channelId":"${e(d.channelId)}","title":"${e(d.title)}","poster":"${e(d.poster)}","description":"${e(d.description)}"}"""
     }
 
-    private fun decodeLoadData(s: String): LoadData = try {
+    private fun decodeData(s: String): LoadData = try {
         parseJson<LoadData>(s)
-    } catch (e: Exception) {
-        LoadData(channelId = s, title = s, poster = null, description = null)
+    } catch (_: Exception) {
+        LoadData(channelId = s, title = s)
     }
 }
