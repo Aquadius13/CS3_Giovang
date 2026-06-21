@@ -2,9 +2,7 @@ name: Build Cloudstream3 Plugin
 
 on:
   push:
-    branches:
-      - master
-      - main
+    branches: [master, main]
   workflow_dispatch:
 
 concurrency:
@@ -17,6 +15,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -41,47 +40,104 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      # Build .cs3 + sinh plugins.json tự động
       - name: Build plugin
         run: ./gradlew GioVangProvider:make
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
 
-      # Gom tất cả .cs3 + plugins.json vào thư mục __builds/
-      - name: Collect build artifacts
+      # Debug: xem gradlew sinh ra file gì và ở đâu
+      - name: List build outputs
         run: |
-          mkdir -p __builds
-          find . -name "*.cs3" -not -path "./__builds/*" \
-                               -not -path "./build/*" \
-                 -exec cp {} __builds/ \;
-          # plugins.json được gradlew:make sinh ra ở gốc repo
-          [ -f plugins.json ] && cp plugins.json __builds/
-          echo "=== __builds/ ==="
-          ls -la __builds/
+          echo "=== Root ==="
+          ls -la
+          echo "=== GioVangProvider/build ==="
+          find GioVangProvider/build -type f 2>/dev/null || echo "(empty)"
+          echo "=== *.cs3 anywhere ==="
+          find . -name "*.cs3" 2>/dev/null
+          echo "=== plugins.json anywhere ==="
+          find . -name "plugins.json" 2>/dev/null
 
-      # Sinh repo.json (URL người dùng dán vào app Cloudstream)
+      # Thu thập file .cs3 + plugins.json từ mọi nơi gradle đặt chúng
+      - name: Collect artifacts
+        run: |
+          mkdir -p __output
+
+          # .cs3 thường nằm ở gốc repo sau khi gradlew:make chạy
+          find . -name "*.cs3" -not -path "./__output/*" \
+                               -exec cp {} __output/ \;
+
+          # plugins.json có thể ở gốc hoặc trong build/
+          find . -name "plugins.json" -not -path "./__output/*" \
+                                      -exec cp {} __output/ \;
+
+          echo "=== __output/ ==="
+          ls -la __output/
+
+      # Sinh repo.json
       - name: Generate repo.json
         run: |
           REPO="${{ github.repository }}"
-          BRANCH="builds"
-          cat > __builds/repo.json << REPOEOF
+          cat > __output/repo.json << REPOEOF
           {
             "name": "GioVang TV",
             "description": "Plugin xem bóng đá trực tiếp từ giovang.vin",
             "manifestVersion": 1,
             "pluginLists": [
-              "https://raw.githubusercontent.com/${REPO}/${BRANCH}/plugins.json"
+              "https://raw.githubusercontent.com/${REPO}/builds/plugins.json"
             ]
           }
           REPOEOF
-          echo "repo.json:"
-          cat __builds/repo.json
+          echo "repo.json OK"
 
-      # Push thư mục __builds/ lên branch "builds"
-      - name: Deploy to builds branch
-        uses: JamesIves/github-pages-deploy-action@v4
-        with:
-          branch: builds
-          folder: __builds
-          clean: false
-          commit-message: "Build ${{ github.sha }}"
-          git-config-name: github-actions[bot]
-          git-config-email: github-actions[bot]@users.noreply.github.com
+      # Nếu plugins.json chưa được sinh bởi gradle, tạo thủ công
+      - name: Generate plugins.json (fallback)
+        run: |
+          REPO="${{ github.repository }}"
+          if [ ! -f __output/plugins.json ]; then
+            echo "[" > __output/plugins.json
+            echo "  {" >> __output/plugins.json
+            echo "    \"internalName\": \"GioVangProvider\"," >> __output/plugins.json
+            echo "    \"name\": \"GioVang TV\"," >> __output/plugins.json
+            echo "    \"version\": 1," >> __output/plugins.json
+            echo "    \"url\": \"https://raw.githubusercontent.com/${REPO}/builds/GioVangProvider.cs3\"," >> __output/plugins.json
+            echo "    \"tvTypes\": [\"Live\"]," >> __output/plugins.json
+            echo "    \"language\": \"vi\"," >> __output/plugins.json
+            echo "    \"description\": \"Trực tiếp bóng đá từ giovang.vin\"," >> __output/plugins.json
+            echo "    \"iconUrl\": \"https://www.google.com/s2/favicons?domain=giovang.vin&sz=256\"" >> __output/plugins.json
+            echo "  }" >> __output/plugins.json
+            echo "]" >> __output/plugins.json
+            echo "plugins.json generated (fallback)"
+          else
+            echo "plugins.json already exists from gradle"
+          fi
+          cat __output/plugins.json
+
+      # Push lên branch "builds" dùng git trực tiếp (đáng tin cậy hơn action bên ngoài)
+      - name: Push to builds branch
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Tạo branch "builds" nếu chưa có, hoặc checkout nếu đã có
+          git fetch origin builds 2>/dev/null || true
+
+          # Lưu các file cần push ra thư mục tạm bên ngoài git
+          cp -r __output /tmp/plugin_builds
+
+          # Switch sang branch builds (tạo orphan nếu chưa có)
+          if git ls-remote --exit-code --heads origin builds; then
+            git checkout builds
+          else
+            git checkout --orphan builds
+            git rm -rf . --quiet
+          fi
+
+          # Copy file vào branch builds
+          cp /tmp/plugin_builds/* .
+
+          # Commit và push
+          git add *.cs3 plugins.json repo.json 2>/dev/null || git add .
+          git status
+          git commit -m "Build: ${{ github.sha }}" || echo "Nothing to commit"
+          git push origin builds
+          echo "✅ Pushed to builds branch"
