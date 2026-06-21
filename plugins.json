@@ -1,0 +1,12 @@
+[
+  {
+    "internalName": "GioVangProvider",
+    "name": "GioVang TV",
+    "version": 1,
+    "url": "https://raw.githubusercontent.com/Aquadius13/CS3_Giovang/builds/GioVangProvider.cs3",
+    "tvTypes": ["Live"],
+    "language": "vi",
+    "description": "Trực tiếp bóng đá từ giovang.vin",
+    "iconUrl": "https://www.google.com/s2/favicons?domain=giovang.vin&sz=256"
+  }
+]
