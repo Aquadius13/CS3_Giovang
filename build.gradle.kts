@@ -1,4 +1,3 @@
-// build.gradle.kts (ROOT) — copy chính xác từ recloudstream/TestPlugins master
 import com.android.build.gradle.BaseExtension
 import com.lagradost.cloudstream3.gradle.CloudstreamExtension
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
@@ -13,7 +12,8 @@ buildscript {
     dependencies {
         classpath("com.android.tools.build:gradle:8.7.3")
         classpath("com.github.recloudstream:gradle:-SNAPSHOT")
-        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.1.0")
+        // Nâng lên 2.3.0 để khớp với cloudstream.jar (metadata 2.3.0)
+        classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.0")
     }
 }
 
@@ -37,7 +37,6 @@ subprojects {
     apply(plugin = "com.lagradost.cloudstream3.gradle")
 
     cloudstream {
-        // Tự động lấy tên repo từ biến môi trường GitHub Actions
         setRepo(System.getenv("GITHUB_REPOSITORY") ?: "user/repo")
     }
 
