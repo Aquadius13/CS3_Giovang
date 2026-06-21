@@ -1,0 +1,8 @@
+{
+  "name": "GioVang TV",
+  "description": "Plugin xem bóng đá trực tiếp từ giovang.vin",
+  "manifestVersion": 1,
+  "pluginLists": [
+    "https://raw.githubusercontent.com/Aquadius13/CS3_Giovang/builds/plugins.json"
+  ]
+}
