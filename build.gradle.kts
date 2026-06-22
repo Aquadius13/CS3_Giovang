@@ -1,3 +1,6 @@
+// build.gradle.kts (ROOT)
+// Theo đúng template: https://github.com/recloudstream/TestPlugins
+
 import com.android.build.gradle.BaseExtension
 import com.lagradost.cloudstream3.gradle.CloudstreamExtension
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
@@ -12,7 +15,7 @@ buildscript {
     dependencies {
         classpath("com.android.tools.build:gradle:8.7.3")
         classpath("com.github.recloudstream:gradle:-SNAPSHOT")
-        // Nâng lên 2.3.0 để khớp với cloudstream.jar (metadata 2.3.0)
+        // Phải khớp với Kotlin version của cloudstream.jar (hiện tại 2.3.0)
         classpath("org.jetbrains.kotlin:kotlin-gradle-plugin:2.3.0")
     }
 }
@@ -37,6 +40,7 @@ subprojects {
     apply(plugin = "com.lagradost.cloudstream3.gradle")
 
     cloudstream {
+        // Lấy từ env GitHub Actions để sinh plugins.json đúng repo URL
         setRepo(System.getenv("GITHUB_REPOSITORY") ?: "user/repo")
     }
 
@@ -57,7 +61,7 @@ subprojects {
                 freeCompilerArgs.addAll(
                     "-Xno-call-assertions",
                     "-Xno-param-assertions",
-                    "-Xno-receiver-assertions"
+                    "-Xno-receiver-assertions",
                 )
             }
         }
@@ -66,6 +70,7 @@ subprojects {
     dependencies {
         val cloudstream by configurations
         val implementation by configurations
+        // Dùng pre-release để khớp với Kotlin 2.3.0
         cloudstream("com.lagradost:cloudstream3:pre-release")
         implementation(kotlin("stdlib"))
         implementation("com.github.Blatzar:NiceHttp:0.4.11")
