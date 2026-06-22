@@ -1,12 +1,17 @@
-name: Build Cloudstream3 Plugin
+name: Build CS3 Plugin
 
+# Trigger khi push code Kotlin, hoặc chạy thủ công
 on:
   push:
     branches: [master, main]
+    paths:
+      - '**.kt'
+      - '**.gradle.kts'
+      - '.github/workflows/build.yml'
   workflow_dispatch:
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
+  group: build-${{ github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -15,7 +20,6 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -40,107 +44,95 @@ jobs:
       - name: Make gradlew executable
         run: chmod +x ./gradlew
 
-      - name: Build plugin
+      # ── BƯỚC 1: Build .cs3 ────────────────────────────────────────────────
+      - name: Build .cs3
         run: ./gradlew GioVangProvider:make
         env:
           GITHUB_REPOSITORY: ${{ github.repository }}
 
-      # Debug: xem gradlew sinh ra file gì và ở đâu
-      - name: List build outputs
+      # ── BƯỚC 2: Sinh plugins.json (task chính thức theo docs CS3) ──────────
+      - name: Generate plugins.json
+        run: ./gradlew makePluginsJson
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+      # ── Debug: xem build sinh ra gì ────────────────────────────────────────
+      - name: Debug - list generated files
         run: |
-          echo "=== Root ==="
+          echo "=== .cs3 files ==="
+          find . -name "*.cs3" -not -path "./.git/*" 2>/dev/null
+          echo "=== plugins.json ==="
+          find . -name "plugins.json" -not -path "./.git/*" 2>/dev/null
+          echo "=== Root dir ==="
           ls -la
-          echo "=== GioVangProvider/build ==="
-          find GioVangProvider/build -type f 2>/dev/null || echo "(empty)"
-          echo "=== *.cs3 anywhere ==="
-          find . -name "*.cs3" 2>/dev/null
-          echo "=== plugins.json anywhere ==="
-          find . -name "plugins.json" 2>/dev/null
 
-      # Thu thập file .cs3 + plugins.json từ mọi nơi gradle đặt chúng
-      - name: Collect artifacts
-        run: |
-          mkdir -p __output
-
-          # .cs3 thường nằm ở gốc repo sau khi gradlew:make chạy
-          find . -name "*.cs3" -not -path "./__output/*" \
-                               -exec cp {} __output/ \;
-
-          # plugins.json có thể ở gốc hoặc trong build/
-          find . -name "plugins.json" -not -path "./__output/*" \
-                                      -exec cp {} __output/ \;
-
-          echo "=== __output/ ==="
-          ls -la __output/
-
-      # Sinh repo.json
+      # ── BƯỚC 3: Sinh repo.json theo đúng schema docs CS3 ─────────────────
+      # Schema: { name, description, manifestVersion, pluginLists: ["<URL plugins.json>"] }
       - name: Generate repo.json
         run: |
           REPO="${{ github.repository }}"
-          cat > __output/repo.json << REPOEOF
+          cat > repo.json << 'REPOEOF'
           {
             "name": "GioVang TV",
             "description": "Plugin xem bóng đá trực tiếp từ giovang.vin",
             "manifestVersion": 1,
             "pluginLists": [
-              "https://raw.githubusercontent.com/${REPO}/builds/plugins.json"
+              "PLUGINS_URL"
             ]
           }
           REPOEOF
-          echo "repo.json OK"
+          # Thay PLUGINS_URL bằng URL thực
+          PLUGINS_URL="https://raw.githubusercontent.com/${REPO}/builds/plugins.json"
+          sed -i "s|PLUGINS_URL|${PLUGINS_URL}|g" repo.json
+          echo "=== repo.json ==="
+          cat repo.json
 
-      # Nếu plugins.json chưa được sinh bởi gradle, tạo thủ công
-      - name: Generate plugins.json (fallback)
+      # ── BƯỚC 4: Gom file vào __output/ ────────────────────────────────────
+      - name: Collect artifacts
         run: |
-          REPO="${{ github.repository }}"
-          if [ ! -f __output/plugins.json ]; then
-            cat > __output/plugins.json << PLUGEOF
-          [
-            {
-              "internalName": "GioVangProvider",
-              "name": "GioVang TV",
-              "version": 1,
-              "url": "https://raw.githubusercontent.com/${REPO}/builds/GioVangProvider.cs3",
-              "tvTypes": ["Live"],
-              "language": "vi",
-              "description": "Trực tiếp bóng đá từ giovang.vin",
-              "iconUrl": "https://www.google.com/s2/favicons?domain=giovang.vin&sz=256"
-            }
-          ]
-          PLUGEOF
-            echo "plugins.json generated (fallback)"
-          else
-            echo "plugins.json already exists from gradle"
-          fi
-          echo "=== plugins.json ==="
-          cat __output/plugins.json
+          mkdir -p __output
+          # .cs3
+          find . -name "*.cs3" -not -path "./.git/*" -not -path "./__output/*" \
+               -exec cp {} __output/ \;
+          # plugins.json
+          [ -f plugins.json ] && cp plugins.json __output/
+          # repo.json
+          cp repo.json __output/
+          echo "=== __output/ ==="
+          ls -la __output/
+          # Fail sớm nếu thiếu file quan trọng
+          [ -f __output/GioVangProvider.cs3 ] || { echo "❌ .cs3 missing!"; exit 1; }
+          [ -f __output/plugins.json ] || { echo "❌ plugins.json missing!"; exit 1; }
+          [ -f __output/repo.json ] || { echo "❌ repo.json missing!"; exit 1; }
+          echo "✅ All required files present"
 
-      # Push lên branch "builds" dùng git trực tiếp (đáng tin cậy hơn action bên ngoài)
-      - name: Push to builds branch
+      # ── BƯỚC 5: Push lên branch "builds" bằng git trực tiếp ───────────────
+      - name: Deploy to builds branch
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Tạo branch "builds" nếu chưa có, hoặc checkout nếu đã có
+          # Lưu output ra ngoài git working tree
+          cp -r __output /tmp/cs3_output
+
+          # Tạo/switch sang branch builds
           git fetch origin builds 2>/dev/null || true
-
-          # Lưu các file cần push ra thư mục tạm bên ngoài git
-          cp -r __output /tmp/plugin_builds
-
-          # Switch sang branch builds (tạo orphan nếu chưa có)
-          if git ls-remote --exit-code --heads origin builds; then
+          if git ls-remote --exit-code --heads origin builds > /dev/null 2>&1; then
             git checkout builds
           else
             git checkout --orphan builds
-            git rm -rf . --quiet
+            git rm -rf . --quiet || true
           fi
 
-          # Copy file vào branch builds
-          cp /tmp/plugin_builds/* .
+          # Copy các file vào branch builds
+          cp /tmp/cs3_output/* .
 
           # Commit và push
-          git add *.cs3 plugins.json repo.json 2>/dev/null || git add .
-          git status
-          git commit -m "Build: ${{ github.sha }}" || echo "Nothing to commit"
-          git push origin builds
-          echo "✅ Pushed to builds branch"
+          git add GioVangProvider.cs3 plugins.json repo.json
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Build $(date -u '+%Y-%m-%d %H:%M:%S UTC') — ${{ github.sha }}"
+            git push origin builds
+            echo "✅ Deployed to builds branch"
+          fi
