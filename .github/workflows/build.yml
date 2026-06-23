@@ -128,8 +128,12 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # Lưu output ra ngoài git working tree
+          # Lưu output ra ngoài git working tree TRƯỚC khi switch branch
           cp -r __output /tmp/cs3_output
+
+          # Xóa các file untracked có thể gây conflict khi checkout
+          # (plugins.json, repo.json, *.cs3 nếu có trong main)
+          rm -f plugins.json repo.json *.cs3 2>/dev/null || true
 
           # Tạo/switch sang branch builds
           git fetch origin builds 2>/dev/null || true
@@ -140,8 +144,10 @@ jobs:
             git rm -rf . --quiet || true
           fi
 
-          # Copy các file vào branch builds
-          cp /tmp/cs3_output/* .
+          # Copy các file đã build vào branch builds
+          cp /tmp/cs3_output/GioVangProvider.cs3 .
+          cp /tmp/cs3_output/plugins.json .
+          cp /tmp/cs3_output/repo.json .
 
           # Commit và push
           git add GioVangProvider.cs3 plugins.json repo.json
