@@ -1,0 +1,154 @@
+name: Build CS3 Plugin
+
+# Trigger khi push code Kotlin, hoặc chạy thủ công
+on:
+  push:
+    branches: [master, main]
+    paths:
+      - '**.kt'
+      - '**.gradle.kts'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: 17
+          distribution: zulu
+
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('**/*.gradle.kts', '**/gradle-wrapper.properties') }}
+          restore-keys: gradle-
+
+      - name: Make gradlew executable
+        run: chmod +x ./gradlew
+
+      # ── BƯỚC 1: Build .cs3 ────────────────────────────────────────────────
+      - name: Build .cs3
+        run: ./gradlew GioVangProvider:make
+        env:
+          GITHUB_REPOSITORY: ${{ github.repository }}
+
+      # ── BƯỚC 2: Sinh plugins.json thủ công ──────────────────────────────
+      - name: Generate plugins.json
+        run: |
+          REPO="${{ github.repository }}"
+          VERSION=$(grep -o 'version = [0-9]*' GioVangProvider/build.gradle.kts | grep -o '[0-9]*' || echo "1")
+          CS3_URL="https://raw.githubusercontent.com/${REPO}/builds/GioVangProvider.cs3"
+          python3 -c "
+          import json, os
+          data = [{
+            'internalName': 'GioVangProvider',
+            'name': 'GioVang TV',
+            'version': int(os.environ.get('VERSION','1')),
+            'url': os.environ.get('CS3_URL',''),
+            'tvTypes': ['Live'],
+            'language': 'vi',
+            'description': 'Trực tiếp bóng đá từ giovang.vin',
+            'iconUrl': 'https://www.google.com/s2/favicons?domain=giovang.vin&sz=256',
+          }]
+          print(json.dumps(data, ensure_ascii=False, indent=2))
+          " > plugins.json
+          echo "=== plugins.json ==="
+          cat plugins.json
+
+      # ── Debug: xem build sinh ra gì ────────────────────────────────────────
+      - name: Debug - list generated files
+        run: |
+          echo "=== .cs3 files ==="
+          find . -name "*.cs3" -not -path "./.git/*" 2>/dev/null
+          echo "=== plugins.json ==="
+          find . -name "plugins.json" -not -path "./.git/*" 2>/dev/null
+          echo "=== Root dir ==="
+          ls -la
+
+      # ── BƯỚC 3: Sinh repo.json ────────────────────────────────────────────
+      - name: Generate repo.json
+        run: |
+          REPO="${{ github.repository }}"
+          python3 -c "
+          import json, os
+          repo = os.environ.get('REPO','')
+          data = {
+            'name': 'GioVang TV',
+            'description': 'Plugin xem bóng đá trực tiếp từ giovang.vin',
+            'manifestVersion': 1,
+            'pluginLists': [
+              f'https://raw.githubusercontent.com/{repo}/builds/plugins.json'
+            ]
+          }
+          print(json.dumps(data, ensure_ascii=False, indent=2))
+          " > repo.json
+          echo "=== repo.json ==="
+          cat repo.json
+
+      # ── BƯỚC 4: Gom file vào __output/ ────────────────────────────────────
+      - name: Collect artifacts
+        run: |
+          mkdir -p __output
+          # .cs3
+          find . -name "*.cs3" -not -path "./.git/*" -not -path "./__output/*" \
+               -exec cp {} __output/ \;
+          # plugins.json
+          [ -f plugins.json ] && cp plugins.json __output/
+          # repo.json
+          cp repo.json __output/
+          echo "=== __output/ ==="
+          ls -la __output/
+          # Fail sớm nếu thiếu file quan trọng
+          [ -f __output/GioVangProvider.cs3 ] || { echo "❌ .cs3 missing!"; exit 1; }
+          [ -f __output/plugins.json ] || { echo "❌ plugins.json missing!"; exit 1; }
+          [ -f __output/repo.json ] || { echo "❌ repo.json missing!"; exit 1; }
+          echo "✅ All required files present"
+
+      # ── BƯỚC 5: Push lên branch "builds" bằng git trực tiếp ───────────────
+      - name: Deploy to builds branch
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          # Lưu output ra ngoài git working tree
+          cp -r __output /tmp/cs3_output
+
+          # Tạo/switch sang branch builds
+          git fetch origin builds 2>/dev/null || true
+          if git ls-remote --exit-code --heads origin builds > /dev/null 2>&1; then
+            git checkout builds
+          else
+            git checkout --orphan builds
+            git rm -rf . --quiet || true
+          fi
+
+          # Copy các file vào branch builds
+          cp /tmp/cs3_output/* .
+
+          # Commit và push
+          git add GioVangProvider.cs3 plugins.json repo.json
+          if git diff --staged --quiet; then
+            echo "No changes to commit"
+          else
+            git commit -m "Build $(date -u '+%Y-%m-%d %H:%M:%S UTC') — ${{ github.sha }}"
+            git push origin builds
+            echo "✅ Deployed to builds branch"
+          fi
